@@ -1,0 +1,109 @@
+package ru.example.postgresanalyst
+
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.DeserializationFeature
+import org.eclipse.lmos.arc.agents.ArcException
+import org.eclipse.lmos.arc.agents.conversation.*
+import org.eclipse.lmos.arc.agents.functions.LLMFunction
+import org.eclipse.lmos.arc.agents.llm.*
+import org.eclipse.lmos.arc.core.Result
+import org.eclipse.lmos.arc.core.Success
+import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.config.BeanPostProcessor
+import org.springframework.stereotype.Component
+
+@Component
+class JsonToolAdapter : BeanPostProcessor {
+
+    override fun postProcessAfterInitialization(bean: Any, beanName: String): Any {
+        if (bean !is ChatCompleterProvider) return bean
+
+        return Proxy.newProxyInstance(
+            ChatCompleterProvider::class.java.classLoader,
+            arrayOf(ChatCompleterProvider::class.java)
+        ) { _, method, args ->
+            val value = try {
+                method.invoke(bean, *(args ?: emptyArray()))
+            } catch (e: InvocationTargetException) {
+                throw e.targetException
+            }
+
+            if (
+                method.name == "provideByModel" &&
+                args?.firstOrNull() == "qwen2.5-coder:7b" &&
+                value is ChatCompleter
+            ) {
+                JsonToolCompleter(value)
+            } else {
+                value
+            }
+        }
+    }
+}
+
+private class JsonToolCompleter(
+    private val delegate: ChatCompleter
+) : ChatCompleter {
+
+    private val log = LoggerFactory.getLogger(javaClass)
+
+    override suspend fun complete(
+        messages: List<ConversationMessage>,
+        functions: List<LLMFunction>?,
+        settings: ChatCompletionSettings?
+    ): Result<AssistantMessage, ArcException> {
+        val result = delegate.complete(messages, functions, settings)
+        if (result !is Success) return result
+
+        val message = result.value
+        if (!message.toolCalls.isNullOrEmpty()) return result
+
+        var text = message.content.trim()
+        if (text.startsWith("```json") && text.endsWith("```")) {
+            text = text.removePrefix("```json").removeSuffix("```").trim()
+        } else if (text.startsWith("```") && text.endsWith("```")) {
+            text = text.removePrefix("```").removeSuffix("```").trim()
+        }
+
+        val request = runCatching {
+            ObjectMapper()
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .enable(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+                .readTree(text)
+        }.getOrNull() ?: return result
+
+        if (!request.isObject) return result
+        if (request.fieldNames().asSequence().toSet() !=
+            setOf("name", "arguments")) return result
+
+        val nameNode = request.get("name") ?: return result
+        if (!nameNode.isTextual) return result
+        val name = nameNode.asText()
+        if (name != "get_db_health") return result
+
+        val arguments = request.get("arguments") ?: return result
+        require(arguments.isObject && arguments.size() == 0) {
+            "get_db_health must have empty object arguments"
+        }
+        require(functions.orEmpty().any { it.name == name }) {
+            "get_db_health is not available to this request"
+        }
+
+        val previousCalls = messages.filterIsInstance<AssistantMessage>()
+            .sumOf { it.toolCalls.orEmpty().size }
+        check(previousCalls < 8) {
+            "Tool-call limit reached; start a new conversation"
+        }
+
+        log.info("JSON_TOOL_ADAPTER: converting get_db_health to ARC ToolCall")
+
+        return Success(
+            message.copy(
+                content = "",
+                toolCalls = listOf(ToolCall(name, arguments.toString()))
+            )
+        )
+    }
+}

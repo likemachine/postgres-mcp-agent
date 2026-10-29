@@ -1,0 +1,14 @@
+server:
+  address: 127.0.0.1
+  port: 5051
+
+spring:
+  application:
+    name: postgres-analyst
+
+arc:
+  ai:
+    clients:
+      - id: qwen2.5-coder:7b
+        model-name: qwen2.5-coder:7b
+        client: ollama

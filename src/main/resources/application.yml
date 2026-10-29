@@ -1,0 +1,23 @@
+server:
+  address: 127.0.0.1
+  port: 5051
+
+spring:
+  application:
+    name: postgres-analyst
+
+arc:
+  chat:
+    ui:
+      enabled: true
+
+  ai:
+    clients:
+      - id: qwen2.5-coder:7b
+        model-name: qwen2.5-coder:7b
+        client: ollama
+
+  mcp:
+    tools:
+      urls: http://127.0.0.1:5050
+

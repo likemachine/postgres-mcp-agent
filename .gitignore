@@ -1,0 +1,9 @@
+.gradle/
+build/
+*.log
+*.jar
+.env
+.venv/
+.idea/
+bench_results/
+nohup.out
