@@ -7,3 +7,12 @@ build/
 .idea/
 bench_results/
 nohup.out
+build/
+.gradle/
+.idea/
+*.bak
+*.orig
+*.log
+arc-run.log
+bench_results/
+.env
