@@ -68,8 +68,16 @@ private class JsonToolCompleter(
         val conversation = messages.toMutableList()
         val used = mutableListOf<String>()
         var step = 0
+        var selectDone = false
+        var pendingNudge: String? = null
+        val question = messages.lastOrNull { it is UserMessage }?.content.orEmpty()
+        val needsData = DATA_QUESTION.containsMatchIn(question)
 
         while (true) {
+            pendingNudge?.let {
+                conversation.add(UserMessage(it))
+                pendingNudge = null
+            }
             val result = delegate.complete(conversation, functions, settings)
             if (result !is Success) return result
 
@@ -109,6 +117,8 @@ private class JsonToolCompleter(
             val name = request.first
             val args = request.second
             val observation = execute(name, args, available, used)
+            if (name == "run_select_query") selectDone = true
+            if (needsData && !selectDone && name in SCHEMA_TOOLS) pendingNudge = NUDGE
 
             conversation.add(message.copy(toolCalls = emptyList()))
             conversation.add(
@@ -168,11 +178,13 @@ private class JsonToolCompleter(
             }
         }.getOrNull() ?: return null
         if (!node.isObject) return null
-        if (node.fieldNames().asSequence().toSet() != setOf("name", "arguments")) {
+        val keys = node.fieldNames().asSequence().toSet()
+        if (!keys.contains("name") || !keys.all { it == "name" || it == "arguments" }) {
             return null
         }
         val name = node.get("name")
-        val args = node.get("arguments")
+        val raw = node.get("arguments")
+        val args: JsonNode = if (raw == null || raw.isNull) lenient.createObjectNode() else raw
         if (!name.isTextual || !args.isObject) return null
         return name.asText() to args
     }
@@ -206,7 +218,18 @@ private class JsonToolCompleter(
     }
 
     companion object {
-        private const val MAX_STEPS = 4
+        private const val MAX_STEPS = 8
+        private val SCHEMA_TOOLS = setOf("list_tables", "describe_table", "get_table_stats")
+        private val DATA_QUESTION = Regex(
+            "(?i)(\u0432\u044b\u0440\u0443\u0447\u043a|\u0441\u0440\u0435\u0434\u043d|\u0442\u043e\u043f|" +
+                "\u0441\u0443\u043c\u043c|\u0447\u0435\u043a|\u043a\u0430\u0436\u0434\u043e|" +
+                "\u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438)"
+        )
+        private const val NUDGE =
+            "You have NOT yet run the SELECT query that answers the question. " +
+                "A final answer is NOT allowed now. Reply ONLY with JSON: " +
+                "{\"name\":\"describe_table\",\"arguments\":{\"table\":\"...\"}} for a table you still need, " +
+                "or {\"name\":\"run_select_query\",\"arguments\":{\"sql\":\"...\"}} using only names from the tools."
         private const val MAX_RESULT_CHARS = 8000
     }
 }
