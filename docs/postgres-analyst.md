@@ -1,4 +1,4 @@
-# Stage 4: PostgreSQL Analyst
+# PostgreSQL Analyst
 
 ## Goal
 
